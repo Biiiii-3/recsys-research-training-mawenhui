@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "daily_logs/2026-07-11.md",
+                "file": "knowledge_base/recsys.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "2026-07-11"
+              "title": "recsys"
             }
           },
           {
@@ -213,17 +213,28 @@
   },
   "active": "1e9b83b65292174d",
   "lastOpenFiles": [
+    "Pasted image 20260711221507.png",
+    "Pasted image 20260711213949.png",
+    "Pasted image 20260711213652.png",
+    "Pasted image 20260711213517.png",
+    "knowledge_base/tools.md",
     "knowledge_base/recsys.md",
     "knowledge_base/paper_reading.md",
-    "assignment/第一次课作业.md",
+    "learning_plan.md",
+    "Pasted image 20260712222830.png",
+    "Pasted image 20260711223616.png",
+    "Pasted image 20260711223542.png",
+    "Pasted image 20260711223453.png",
+    "Pasted image 20260711223433.png",
+    "Pasted image 20260711223407.png",
+    "Pasted image 20260711223350.png",
     "daily_logs/2026-07-11.md",
+    "assignment/第一次课作业.md",
     "knowledge_base/math.md",
     "knowledge_base/python.md",
     "daily_logs/2026-07-10.md",
     "README.md",
     "knowledge_base/README.md",
-    "knowledge_base/tools.md",
-    "learning_plan.md",
     "欢迎.md",
     "knowledge_base",
     "assignment",
