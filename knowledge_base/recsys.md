@@ -1735,3 +1735,408 @@ $$
     │
     ▼
 几千物品 → 粗排 → 精排 → 重排 → 推荐结果
+
+---
+
+# 10.SASRec模型
+
+主要用在召回阶段，从几亿物品中选出几千用户可能感兴趣的物品。
+### 核心思想
+
+SASRec 将 **Transformer 中的自注意力机制（Self-Attention）** 引入序列推荐，用于建模用户行为序列中物品之间的依赖关系。
+
+在 SASRec 之前，序列推荐主要使用 RNN（如 GRU4Rec）或 CNN（如 Caser）。SASRec 的优势在于：
+
+- 自注意力可以**并行计算**，训练效率高；
+- 能够**捕捉序列中任意两个位置之间的依赖关系**，不受距离限制；
+- 通过**位置编码**保留序列顺序信息。
+
+---
+
+### 模型结构
+
+SASRec 的整体结构如下：
+
+1. **嵌入层（Embedding Layer）**  
+   将用户历史交互序列中的每个物品映射为稠密向量，同时加上位置编码。
+
+2. **自注意力层（Self-Attention Layer）**  
+   使用 Transformer 的 Multi-Head Self-Attention，计算序列中每个物品与其他物品的注意力权重，得到上下文感知的物品表示。
+
+3. **前馈网络（Feed-Forward Network）**  
+   对自注意力输出进行非线性变换，增强表示能力。
+
+4. **预测层（Prediction Layer）**  
+   将最后一个位置的输出作为用户当前兴趣表示，与候选物品嵌入做内积，得到每个候选物品的得分，取 Top-K 作为推荐结果。
+
+---
+
+### 损失函数
+
+SASRec 使用 **二元交叉熵损失（Binary Cross-Entropy Loss）**：
+
+- 正样本：用户下一个真实交互的物品；
+- 负样本：随机采样的未交互物品。
+
+目标：让正样本的得分尽可能高，负样本的得分尽可能低。
+
+---
+
+### 优点
+
+- 结构简洁，易于理解和实现；
+- 在多个公开数据集上效果优于 GRU4Rec、Caser 等早期方法；
+- 为后续基于 Transformer 的序列推荐模型（如 BERT4Rec、CL4SRec、DuoRec）奠定了基础。
+
+---
+
+### 缺点
+
+- 只建模了用户行为序列，**没有显式建模用户长期偏好**；
+- 对**冷启动用户**效果较差；
+- 自注意力的计算复杂度为 $O(n^2)$，序列过长时效率下降。
+
+---
+
+### 复现资源
+
+- **官方实现（TensorFlow）：** https://github.com/kang205/SASRec
+- **PyTorch 复现（推荐）：** https://github.com/pmixer/SASRec.pytorch
+- **常用数据集：** Amazon Beauty / Games / Electronics、MovieLens、Yelp
+
+---
+## 模型结构
+
+### 1. 参数定义
+
+对于序列推荐，我们定义一个用户的行为序列：$S^u = (S^u_1, S^u_2, ..., S^u_{|S^u|})$，目标是预测下一个用户可能发生交互的物品，但需要依赖之前用户的交互历史。
+
+### 2. Embedding层
+
+文章中重点提到了关于用户行为序列的表示：将行为序列 $S^u$ 转化为一个适宜长度的序列 $s = (s_1, s_2, ..., s_n)$。对于用户 $u$，若其行为序列的长度大于 $n$，则取离当前最近的 $n$ 个行为；若小于 $n$，则采用0在左边进行填充，直至长度为 $n$。然后其经过Embedding操作，得到Embedding矩阵（参数矩阵） $M \in \mathbb{R}^{|I| \times d}$，$I$ 表示物品集合，$d$ 是embedding维度。对于每一个用户行为序列，都可以检索得到Embedding向量，最终得到 $E \in \mathbb{R}^{n \times d}$。「常量零向量0则用作填充项的嵌入」。
+
+【注】关于这一部分其实与很多变长序列的任务都相似，需要将输入转化为一个矩阵，以方便GPU的计算。关于Embedding，在实际代码中，个人会「将行为序列的特征，例如item_id、cate_id等从1开始进行表示，0作为填充值」。之后会经过mask，因此0对应的Embedding向量并没有任何意义。
+
+### Positional Embedding（位置嵌入）
+
+在Transformer中，我们知道，self-attention本身是不具备一种位置关系的，即交换序列中元素的位置，并不影响最终的结果。因此Transformer中引入Positional Embedding（位置嵌入），来表示序列中的一种先后位置关系。假设位置Embedding为 $P \in \mathbb{R}^{n \times d}$，与行为序列的Embedding相加：$\hat{E} = E + P$，所以$\hat{E} \in \mathbb{R}^{n \times d}$。但作者提到，采用了Transformer中的Positional Embedding，结果却更差了，在实验部分有涉及讨论。
+
+### 3. Self-Attention层
+
+该部分与Transformer的「编码层」大体上是一致的，是由「多个（或单个）【自注意力机制+（残差连接、LayerNormalization、Dropout）+前馈网络】」组成。
+
+#### 3.1 Self-Attention Block（自注意力模块）
+
+对于普通的单个自注意力层模块：
+
+简单的注意力机制函数（这里指采用点积方式计算注意力分数）定义如下：
+$$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d}}\right)V$$
+
+- 输入矩阵：X
+- 查询矩阵：$Q = XW^Q$
+- 键矩阵：$K = XW^K$
+- 值矩阵：$V = XW^V$
+
+在自注意力方法」中，$Q, K, V$ 都来自同一对象。在本文中，对输入 $\hat{E}$ 通过线性投影转化为三个矩阵，并使用于上述注意力函数：
+$$S = \text{SA}(\hat{E}) = \text{Attention}(\hat{E}W^Q, \hat{E}W^K, \hat{E}W^V)$$
+
+其中 $W^Q, W^K, W^V \in \mathbb{R}^{d \times d}$ 是线性投影矩阵，$\hat{E} \in \mathbb{R}^{n \times d}$是嵌入层输出的item Embedding，最后得到的 $S \in \mathbb{R}^{n \times d}$
+
+**前馈网络**：虽然自注意力通过权重聚合了所有先前的item embedding，但是它最终依旧是一个线性模型。因此考虑到不同维度隐藏特征的非线性交互，本文与Transformer一样，在self-attention之后，采取两层的前馈网络：
+$$F_i = \text{FFN}(S_i) = \text{ReLU}(S_i W^{(1)} + b^{(1)})W^{(2)} + b^{(2)}$$
+
+其中 $W^{(1)} \in \mathbb{R}^{d \times d}$，$W^{(2)} \in \mathbb{R}^{d \times d}$ 为参数矩阵「参数共享」，$b^{(1)}, b^{(2)}$ 为偏置向量；
+
+**「本文创新：」**
+
+文章该部分的创新点主要在自注意力函数中的 $W^Q, W^K, W^V$。自注意力函数将 $Q, K, V$ 都经过线性投影得到，这增加了模型的灵活性。例如，模型可以学习不同的交互（$QK^T$，$QV$）。对此，作者提出了观点：
+
+> Due to the nature of sequences, the model should consider only the first $i$ items when predicting the $i+1$-th item. However, the $i$-th output of the self-attention layer ($S_i$) contains embeddings of subsequent items, which makes the model ill-posed.
+
+即，在 $QK^T$ 中，当 $j > i$ 时，存在一种"穿越"现象「$Q_i$ 是查询向量，不能与之后的历史物品的信息进行交互」，因此作者提出禁止所有该情况的交互。
+
+#### 3.2 Stacking Self-Attention Blocks（多层注意力模块）
+
+这里与Transformer的思想类似，认为「叠加多个自注意力机制层能够学习更复杂的特征转换」。第 $b$ 个自注意力block定义为：
+$$S^{(b)} = \text{SA}(F^{(b-1)})$$
+$$F_i^{(b)} = \text{FFN}(S_i^{(b)})$$
+
+其中 $F^{(0)} = \hat{E}$；
+
+然而网络层数越深，会存在一些问题：
+
+- 模型更容易过拟合；
+- 训练过程不稳定（梯度消失问题等）；
+- 模型需要学习更多的参数以及需要更长的时间训练；
+
+因此，作者在自注意力机制层和前馈网络加入残差连接、Layer Normalization（层归一化）、Dropout（随机激活）来抑制模型的过拟合。（其实依旧与Transformer类似），
+用公式表示为：
+$$g(x) = x + \text{Dropout}(g(\text{LayerNorm}(x)))$$
+
+其中先将上一层的Embedding 向量进行层归一化，然后再进行自注意力模块和前馈神网络，随后执行Dropout，最后进行残差连接，将原来输入与Dropout输出相加，于是就得到这一单个自注意力模块的输出。
+
+### 4. 预测层
+
+在经过 $b$ 个self-attention block之后，预测用户在已知前 t 个物品的情况下，下一步最可能交互的物品 $F^{(b)}$，模型最终的目标是预测下一个用户感兴趣的物品。因此，作者通过一个矩阵分解（Matrix Factorization，MF）层来预测物品 $i$ 的相关性：
+$$r_{i,t} = F_t^{(b)} \cdot N_i^T$$
+
+其中 $r_{i,t}$ 表示用户在已经交互前 t 个物品（即 s1,s2​,⋯,st）后，下一步与候选物品 i 的相关性得分，$N_i$ 是已经训练好的物品Embedding矩阵 N 中第 i 个物品对应的 Embedding 向量，Ft(b)​是经过第 b个 Self-Attention Block 后，第 t 个位置对应的输出。因此 $r_{i,t}$ 越高，则说明具有更高的相关性。那么我们可以通过对其排序进行推荐。
+
+【注】：
+
+- 通俗来说，已知用户历史行为，通过SASRec模型得到一个对历史行为的建模，然后我们将其与每一个候选物品（也可以说是目标物品）的表示（Embedding向量）进行交互（文章采用的是内积方式），得到一个 $r_{i,t}$，表示一种相关性。然后将所有的分数进行排序、筛选，完成推荐；
+- 物品的Embedding矩阵表示是不同的，模型之前训练得到的是 $M$，而这是 $N$，结合下文内容，这里 $N$ 应该指的是一个已经训练好的物品Embedding矩阵；
+
+**「尝试：」**
+
+1. 为了减小模型大小以及过拟合，作者「使用了SASRec模型训练的Embedding矩阵」进行交互：
+$$r_{i,t} = F_t^{(b)} \cdot M_i^T$$
+
+这里采用共享物品 Embedding（Shared Item Embedding），输入 Embedding 与输出预测 Embedding 共用同一套参数。作者提到如果采用相同的Embedding表示，会产生一个问题：无法通过内积表示一种不对称的转换。例如如果在物品 $i$ 之后会频繁地买物品 $j$，但是反过来买物品i下一步却不会买物品j。但是用相同的Embedding表示，进行内积操作后，却没有区分$r_{i,t} = r_{j,t}$。像FPMC模型通过不同的Embedding解决这个问题。不过，作者指出，SASRec模型不会有这个问题，因为模型不仅仅进行简单的向量内积，而是在预测之前，先经过了非线性变换（Nonlinear Transformation），例如前馈网络（Feed Forward Network，FFN）可以实现：
+FFN(Mi​)MjT=FFN(Mj​)MiT​。
+
+> However, our model doesn't have this issue since it learns a nonlinear transformation. For example, the feed forward network can easily achieve the asymmetry with the same item embedding: $F_t^{(b)} \cdot M_i^T \neq F_t^{(b)} \cdot M_j^T$. Empirically, using a shared item embedding significantly improves the performance of our model.
+
+2. SASRec模型通过用户历史行为建模来表示一个用户，当然像MF等，都是「通过user embedding来对用户进行显示的建模」。因此，作者在原有的基础上，加入了user embedding：
+$$r_{i,t} = (F_t^{(b)} + U^u) \cdot M_i^T$$
+
+其中 $U^u$ 表示用户 $u$ 的Embedding（如果将 $F_t^{(b)}$ 去掉，其实就是一个MF模型）。最终实验结果表明，并没有提高模型的性能，因为在 $F_t^{(b)}$ 已经充分地表示了用户的信息了。
+
+### 5. 模型训练
+
+将每一个用户行为序列转化成固定长度输入 $(s_1, s_2, ..., s_n)$，并且定义输出 $o = (o_1, o_2, ..., o_n)$：
+$$
+o_t=
+\begin{cases}
+\langle \mathrm{pad} \rangle, & \text{if } s_t \text{ is a padding item}, \\\\
+s_{t+1}, & 1 \le t < n, \\\\
+S^{u}_{|S_u|}, & t = n.
+\end{cases}
+$$
+
+< pad >表示填充位置（Padding Item），如果输入为填充值，输出也是填充值。1 ≤ t < n时训练目标即输出就是预测下一个物品s_t+1，对于最后一个位置，没有 s_n+1，因此论文直接使用用户真实序列中的最后一个物品作为预测目标，也就是说最后一个位置的目标就是用户真实发生的最后一次交互。
+
+定义最终的交叉损失函数（BCE）为：
+$$
+-\sum_{S^u \in S}\sum_{t \in \{1,2,\ldots,n\}}
+\left[
+\log\left(\sigma(r_{o_t,t})\right)
++
+\sum_{j \notin S^u}
+\log\left(1-\sigma(r_{j,t})\right)
+\right].
+$$
+其中：
+
+- $S$：所有用户序列集合（All User Sequences）。
+- $o_t$：当前第$t$个位置对应的真实目标物品（Ground Truth Item）。
+- $r_{o_t,t}$：模型预测真实目标物品的相关性得分（Prediction Score of the Positive Item）。
+- $j$：随机采样得到的负样本物品（Negative Sample）。
+- $\sigma(\cdot)$：Sigmoid 激活函数（Sigmoid Activation Function）。
+然后累加正样本损失与负样本损失的和。
+
+文章采用Adam优化器，并且针对每一时刻的正样本，都会随机生成一个物品 j来作为负样本(平衡训练过程中正负样本的比例）。
+
+## **user**: Embedding操作是怎么样的？
+
+**ai**: 根据你提供的笔记和公众号文章内容，SASRec 的 Embedding 操作可以分为以下几个步骤：
+
+---
+
+## 1. 序列长度标准化
+
+对于用户 $u$ 的行为序列 $S^u = (S^u_1, S^u_2, ..., S^u_{|S^u|})$，需要转化为固定长度 $n$ 的序列 $s = (s_1, s_2, ..., s_n)$：
+
+- **若 $|S^u| > n$**：取离当前最近的 $n$ 个行为（即序列末尾的 $n$ 个物品）；
+- 若 $|S^u| < n$**：在序列**左侧**用 0 进行填充，直至长度为 $n$。
+
+> 注意：填充值 0 对应的 Embedding 是**零向量**，在后续计算中通过 mask 机制被忽略。
+
+---
+
+## 2. Item Embedding
+
+每个物品 $i$ 被映射为一个 $d$ 维的稠密向量。具体来说：
+
+- 物品集合大小为 $|I|$，Embedding 矩阵为 $M \in \mathbb{R}^{|I| \times d}$；
+- 对于用户行为序列 $s = (s_1, s_2, ..., s_n)$，通过查表得到 Embedding 矩阵 $E \in \mathbb{R}^{n \times d}$；
+- 填充值 0 对应的 Embedding 为零向量。
+
+---
+
+## 3. Positional Embedding（位置嵌入）
+
+由于 Self-Attention 本身不具备位置感知能力（交换序列中物品的顺序不影响结果），需要加入位置信息。
+
+- 位置 Embedding 矩阵 $P \in \mathbb{R}^{n \times d}$；
+- 与 Item Embedding 相加：$\hat{E} = E + P$。
+
+**注意**：论文实验中发现，使用 Transformer 中的 Positional Embedding 反而导致效果变差，具体原因在实验部分有讨论。
+
+---
+
+## 4. 最终输入
+
+经过上述步骤后，得到最终的 Embedding 矩阵 $\hat{E} \in \mathbb{R}^{n \times d}$，作为 Self-Attention 层的输入。
+
+---
+
+## 总结图示
+
+```
+用户原始序列: [item_3, item_7, item_5]  (长度=3)
+标准化为n=5:  [0, 0, item_3, item_7, item_5]  (左侧填充)
+                    ↓
+Item Embedding:  [0向量, 0向量, E_3, E_7, E_5]  ∈ R^{5×d}
+                    ↓ 加上
+Positional Embedding:  [P_1, P_2, P_3, P_4, P_5]  ∈ R^{5×d}
+                    ↓
+最终输入:  [P_1, P_2, E_3+P_3, E_7+P_4, E_5+P_5]  ∈ R^{5×d}
+```
+
+---
+
+## user: Item Embedding具体的例子
+
+**ai**: 好的，我来给你举一个具体的例子，这样会更直观。
+
+---
+
+## 假设场景
+
+假设我们有一个电商平台，物品集合只有 **5 个物品**：
+
+| 物品ID | 物品名称 |
+|--------|----------|
+| 1 | 手机 |
+| 2 | 电脑 |
+| 3 | 耳机 |
+| 4 | 鼠标 |
+| 5 | 键盘 |
+
+假设 Embedding 维度 $d = 4$（实际中通常是 64 或 128，这里为了举例简化）。
+
+---
+
+## 步骤 1：初始化 Item Embedding 矩阵
+
+随机初始化一个矩阵 $M \in \mathbb{R}^{5 \times 4}$，每一行对应一个物品的 Embedding 向量：
+
+```
+M = 
+物品1 (手机):  [0.12, 0.45, -0.23, 0.67]
+物品2 (电脑):  [0.89, -0.12, 0.34, -0.56]
+物品3 (耳机):  [-0.34, 0.78, 0.12, -0.45]
+物品4 (鼠标):  [0.56, -0.67, 0.89, 0.12]
+物品5 (键盘):  [-0.78, 0.23, -0.56, 0.34]
+```
+
+> 注意：这些数值是**随机初始化**的，在训练过程中会通过反向传播不断更新。
+
+---
+
+## 步骤 2：用户行为序列标准化
+
+假设用户 $u$ 的历史行为序列为：
+
+```
+S^u = [手机, 耳机, 鼠标]  → 对应物品ID: [1, 3, 4]
+```
+
+设定固定长度 $n = 5$，因为原始序列长度 3 < 5，所以在**左侧填充 0**：
+
+```
+s = [0, 0, 1, 3, 4]
+```
+
+---
+
+## 步骤 3：查表得到 Item Embedding
+
+通过 Embedding 矩阵 $M$ 进行查表：
+
+| 序列位置 | 物品ID | 对应的 Embedding 向量 |
+|----------|--------|----------------------|
+| 位置 1 | 0（填充） | **[0, 0, 0, 0]**（零向量） |
+| 位置 2 | 0（填充） | **[0, 0, 0, 0]**（零向量） |
+| 位置 3 | 1（手机） | **[0.12, 0.45, -0.23, 0.67]** |
+| 位置 4 | 3（耳机） | **[-0.34, 0.78, 0.12, -0.45]** |
+| 位置 5 | 4（鼠标） | **[0.56, -0.67, 0.89, 0.12]** |
+
+最终得到 Item Embedding 矩阵 $E \in \mathbb{R}^{5 \times 4}$：
+
+```
+E = 
+位置1: [0,    0,     0,    0   ]  ← 填充项
+位置2: [0,    0,     0,    0   ]  ← 填充项
+位置3: [0.12, 0.45, -0.23, 0.67]  ← 手机
+位置4: [-0.34, 0.78, 0.12, -0.45] ← 耳机
+位置5: [0.56, -0.67, 0.89, 0.12]  ← 鼠标
+```
+
+---
+
+## 步骤 4：加上 Positional Embedding
+
+位置 Embedding 矩阵 $P \in \mathbb{R}^{5 \times 4}$（也是随机初始化，在训练中学习）：
+
+```
+P = 
+位置1: [0.10, 0.20, 0.30, 0.40]
+位置2: [0.15, 0.25, 0.35, 0.45]
+位置3: [0.20, 0.30, 0.40, 0.50]
+位置4: [0.25, 0.35, 0.45, 0.55]
+位置5: [0.30, 0.40, 0.50, 0.60]
+```
+
+最终输入 $\hat{E} = E + P$：
+
+```
+Ê = 
+位置1: [0.10, 0.20, 0.30, 0.40]  ← 填充项 + 位置编码
+位置2: [0.15, 0.25, 0.35, 0.45]  ← 填充项 + 位置编码
+位置3: [0.32, 0.75, 0.17, 1.17]  ← 手机 + 位置编码
+位置4: [-0.09, 1.13, 0.57, 0.10] ← 耳机 + 位置编码
+位置5: [0.86, -0.27, 1.39, 0.72] ← 鼠标 + 位置编码
+```
+
+这个 $\hat{E}$ 就是最终输入到 Self-Attention 层的 Embedding 矩阵。
+
+---
+## 训练过程中 Embedding 如何更新？
+
+Embedding 向量不是固定不变的，而是在训练过程中通过**反向传播**不断优化。
+
+### 训练目标
+
+SASRec 的损失函数是二元交叉熵损失：
+
+$$
+\mathcal{L} = -\sum_{t=1}^n \left[ \log(\sigma(r_{o_t,t})) + \log(1 - \sigma(r_{neg,t})) \right]
+$$
+
+其中 $r_{i,t} = F_t^{(b)} \cdot M_i^T$ 是预测分数。
+
+### 更新过程
+
+1. **前向传播**：计算预测分数 $r_{i,t}$；
+2. **计算损失**：比较预测分数与真实标签的差异；
+3. **反向传播**：计算损失对 Embedding 参数的梯度；
+4. **参数更新**：沿着梯度下降方向更新 Embedding 矩阵中的数值。
+
+经过多轮训练后，语义相似的物品（如"手机"和"耳机"）的 Embedding 向量会逐渐靠近，而语义不相似的物品（如"手机"和"键盘"）的向量会逐渐远离。
+
+---
+
+## 关键点总结
+
+| 概念 | 说明 |
+|------|------|
+| **Item Embedding** | 每个物品对应一个固定维度的稠密向量 |
+| **Embedding 矩阵** | 形状为 $\text{物品数量} \times \text{向量维度}$ 的参数矩阵 |
+| **查表操作** | 根据物品 ID 取出矩阵中对应的行 |
+| **随机初始化** | 训练开始时，所有向量值随机生成 |
+| **训练更新** | 通过反向传播不断优化向量值，使相似物品的向量更接近 |
+| **填充项** | 填充值 0 对应的 Embedding 为零向量，在 Attention 计算中被 mask 忽略 |
+
+---
