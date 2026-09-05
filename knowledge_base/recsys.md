@@ -1833,10 +1833,10 @@ SASRec 使用 **二元交叉熵损失（Binary Cross-Entropy Loss）**：
 $$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d}}\right)V$$
 
 - 输入矩阵：X
-- 查询矩阵：$Q = XW^Q$
-- 键矩阵：$K = XW^K$
-- 值矩阵：$V = XW^V$
-
+- 查询矩阵：$Q = XW^Q$(当前兴趣是什么？当前这个位置想寻找什么样的信息？)
+- 键矩阵：$K = XW^K$（历史商品有什么特点？特点是否匹配？你是不是我需要找的？）
+- 值矩阵：$V = XW^V$（真正提供给别人使用的信息内容？如果你重要，你能提供什么？）
+- QK^T：表示这个位置应该关注谁？
 在自注意力方法」中，$Q, K, V$ 都来自同一对象。在本文中，对输入 $\hat{E}$ 通过线性投影转化为三个矩阵，并使用于上述注意力函数：
 $$S = \text{SA}(\hat{E}) = \text{Attention}(\hat{E}W^Q, \hat{E}W^K, \hat{E}W^V)$$
 
